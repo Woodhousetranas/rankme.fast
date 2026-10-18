@@ -10,9 +10,11 @@ const APPS=['api','web','worker'] as const;
 type Service=typeof SERVICES[number];
 type Runtime={id:string;image:string;env:Record<string,string>};
 type Original=Record<Service,Runtime>;
-type Intent={jobId:string;jobName:string;originals:Record<typeof APPS[number],Pick<Runtime,'id'|'image'>>};
+type Intent={jobId:string;jobName:string;project?:string;holdOnSuccess?:boolean;originals:Record<typeof APPS[number],Pick<Runtime,'id'|'image'>>};
 class SafeError extends Error{}
 function check(value:unknown,message:string):asserts value{if(!value)throw new SafeError(message);}
+export function recoveryProject(value:string){check(value==='rankme'||/^[a-z0-9]{20,32}$/.test(value),'Select the original project or an exact Coolify application UUID');return value;}
+const PROJECT=recoveryProject(process.env.RANKME_DOCKER_PROJECT??'rankme');
 const emit=(step:string,extra:Record<string,unknown>={})=>console.log(JSON.stringify({at:new Date().toISOString(),step,...extra}));
 const imageId=(value:unknown):value is string=>typeof value==='string'&&/^sha256:[a-f0-9]{64}$/.test(value);
 const containerId=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);
@@ -36,7 +38,7 @@ async function inspect(id:string){return JSON.parse(await run(['docker','inspect
 function envMap(values:string[]){return Object.fromEntries(values.map(value=>{const position=value.indexOf('=');return [value.slice(0,position),value.slice(position+1)];}));}
 async function originals():Promise<Original>{
  const result={} as Original;
- for(const service of SERVICES){const value=await inspect('rankme-'+service+'-1');check(value.Config.Labels?.['com.docker.compose.project']==='rankme'&&value.Config.Labels?.['com.docker.compose.service']===service&&value.State.Running&&value.State.Health?.Status==='healthy'&&containerId(value.Id)&&imageId(value.Image),'Original service is not healthy or has changed identity');check((await run(['docker','image','inspect',value.Image,'--format','{{.Id}}'],'Resolve exact original image'))===value.Image,'Original image unavailable');result[service]={id:value.Id,image:value.Image,env:envMap(value.Config.Env)};}
+ for(const service of SERVICES){const value=await inspect(PROJECT+'-'+service+'-1');check(value.Config.Labels?.['com.docker.compose.project']===PROJECT&&value.Config.Labels?.['com.docker.compose.service']===service&&value.State.Running&&value.State.Health?.Status==='healthy'&&containerId(value.Id)&&imageId(value.Image),'Original service is not healthy or has changed identity');check((await run(['docker','image','inspect',value.Image,'--format','{{.Id}}'],'Resolve exact original image'))===value.Image,'Original image unavailable');result[service]={id:value.Id,image:value.Image,env:envMap(value.Config.Env)};}
  const api=result.api.env;for(const name of ['MASTER_ENCRYPTION_KEY','BETTER_AUTH_SECRET','DATABASE_URL','MONGODB_URI','REDIS_URL'])check(!!api[name]&&api[name]===result.worker.env[name],'Original API and worker private configuration differ');
  const pg=new URL(api.DATABASE_URL);const mongo=new URL(api.MONGODB_URI);const redis=new URL(api.REDIS_URL);
  check(pg.hostname==='postgres'&&decodeURIComponent(pg.password)===result.postgres.env.POSTGRES_PASSWORD&&decodeURIComponent(pg.username)===result.postgres.env.POSTGRES_USER&&pg.pathname==='/'+result.postgres.env.POSTGRES_DB,'PostgreSQL runtime binding mismatch');
@@ -56,17 +58,24 @@ async function snapshot(original:Original){
  return {postgres:pg,mongo,redis};
 }
 function matches(before:Awaited<ReturnType<typeof snapshot>>,after:Awaited<ReturnType<typeof snapshot>>){check(postgresMatches(before.postgres,after.postgres),'Restored PostgreSQL data/schema differs');check(before.mongo===after.mongo,'Restored MongoDB documents/indexes differ');check(redisMatches(before.redis,after.redis),'Restored Redis data/expiry/queues differ');}
-export function validateIntent(intent:Intent){
+export function validateIntent(intent:Intent,project=PROJECT){
  check(containerId(intent?.jobId)&&/^rankme-recovery-coolify-[0-9]{8}-[a-f0-9]{8}$/.test(intent.jobName),'Invalid recovery job identity');
+ check(recoveryProject(intent.project??'rankme')===recoveryProject(project)&&[undefined,true,false].includes(intent.holdOnSuccess),'Recovery intent belongs to another project or has an invalid hold');
  check(Object.keys(intent.originals??{}).sort().join(',')==='api,web,worker'&&APPS.every(service=>containerId(intent.originals[service].id)&&imageId(intent.originals[service].image)),'Invalid original application identities');return intent;
 }
 async function resume(intent:Intent){
- validateIntent(intent);for(const service of APPS){const expected=intent.originals[service];const actual=await inspect(expected.id);check(actual.Config.Labels?.['com.docker.compose.project']==='rankme'&&actual.Config.Labels?.['com.docker.compose.service']===service&&actual.Image===expected.image,'Original application changed during maintenance');await run(['docker','start',expected.id],'Resume exact original application');}
+ validateIntent(intent);for(const service of APPS){const expected=intent.originals[service];const actual=await inspect(expected.id);check(actual.Config.Labels?.['com.docker.compose.project']===PROJECT&&actual.Config.Labels?.['com.docker.compose.service']===service&&actual.Image===expected.image,'Original application changed during maintenance');await run(['docker','start',expected.id],'Resume exact original application');}
+}
+export function holdVerified(intent:Intent,exitCode:number,marker:unknown){
+ const receipt=marker as {jobId?:string;project?:string;completeRestoreVerified?:boolean}|null;
+ return intent.holdOnSuccess===true&&exitCode===0&&receipt?.jobId===intent.jobId&&receipt?.project===(intent.project??'rankme')&&receipt?.completeRestoreVerified===true;
 }
 async function waitHealthy(ids:string[]){const until=Date.now()+90000;for(;;){const states=await Promise.all(ids.map(inspect));if(states.every(value=>value.State.Running&&value.State.Health?.Status==='healthy'))return;check(Date.now()<until,'Scoped services did not recover healthy');await Bun.sleep(1000);}}
 async function guard(){
- const intent=validateIntent(JSON.parse(await readFile(join(CONTROL,'intent.json'),'utf8')));let started=false,ready=false;
- for(;;){const value=await inspect(intent.jobId);check(value.Name==='/'+intent.jobName,'Recovery job identity changed');if(!ready){emit('Recovery guard ready');ready=true;}if(value.State.Running||!value.State.StartedAt.startsWith('0001-'))started=true;if(started&&['exited','dead'].includes(value.State.Status))break;await Bun.sleep(1500);}
+ const intent=validateIntent(JSON.parse(await readFile(join(CONTROL,'intent.json'),'utf8')));let started=false,ready=false,exitCode=-1;
+ for(;;){const value=await inspect(intent.jobId);check(value.Name==='/'+intent.jobName,'Recovery job identity changed');if(!ready){emit('Recovery guard ready');ready=true;}if(value.State.Running||!value.State.StartedAt.startsWith('0001-'))started=true;if(started&&['exited','dead'].includes(value.State.Status)){exitCode=value.State.ExitCode;break;}await Bun.sleep(1500);}
+ let marker:unknown=null;try{marker=JSON.parse(await readFile(join(CONTROL,'held-for-cutover.json'),'utf8'));}catch{}
+ if(holdVerified(intent,exitCode,marker)){emit('Verified source applications held for explicit cutover');for(;;)await Bun.sleep(60000);}
  await resume(intent);await waitHealthy(APPS.map(service=>intent.originals[service].id));await privateWrite(join(CONTROL,'guard-resumed.json'),JSON.stringify({at:new Date().toISOString(),originalApplicationsHealthy:true}));emit('Exact original applications resumed by independent guard');for(;;)await Bun.sleep(60000);
 }
 async function preflight(){
@@ -76,11 +85,11 @@ async function preflight(){
 function rootEnvironmentValue(source:string,key:string){const line=source.split(/\r?\n/).find(line=>line.startsWith(key+'='));if(!line)return '';let value=line.slice(key.length+1).trim();if((value.startsWith('"')&&value.endsWith('"'))||(value.startsWith("'")&&value.endsWith("'")))value=value.slice(1,-1);return value;}
 async function sourceEnvironment(original:Original){const info=await lstat('/live-source/.env');check(info.isFile()&&!info.isSymbolicLink()&&info.size<1024*1024,'Original root environment must be a regular file');const value=await readFile('/live-source/.env');for(const key of ['MASTER_ENCRYPTION_KEY','BETTER_AUTH_SECRET'])check(rootEnvironmentValue(value.toString('utf8'),key)===original.api.env[key],'Original root environment and running encryption/session keys differ');return value;}
 function backupPath(id:string){check(/^coolify-[0-9]{8}-[a-f0-9]{8}$/.test(id),'Invalid operation id');const path=resolve(ROOT,'..','backups',id);check(path.startsWith('/var/lib/docker/volumes/coolify-rankme-recovery-'),'Use the dedicated Docker operations volume');return path;}
-async function backup(id:string,revision:string){
+async function backup(id:string,revision:string,holdForCutover=false){
  const destination=backupPath(id);check(/^[a-f0-9]{40}$/.test(revision),'Committed source revision required');
  const original=await originals();const expected=JSON.parse(await readFile(join(CONTROL,'original.json'),'utf8'));check(sameOriginals(expected,original),'Original runtime changed after preflight');await requireIdle(original);
  const intent=validateIntent(JSON.parse(await readFile(join(CONTROL,'intent.json'),'utf8')));check(APPS.every(service=>intent.originals[service].id===original[service].id),'Guard and backup identities differ');
- await privateDir(destination);await privateDir(join(destination,'private'));let baseline:Awaited<ReturnType<typeof snapshot>>;
+ await privateDir(destination);await privateDir(join(destination,'private'));let baseline:Awaited<ReturnType<typeof snapshot>>,captured=false;
  try{
   emit('Pause original API and web');await run(['docker','stop','--time','60',original.api.id,original.web.id],'Pause request producers');await requireIdle(original);
   emit('Pause idle original worker');await run(['docker','stop','--time','60',original.worker.id],'Drain worker');const stopped=await inspect(original.worker.id);check(stopped.State.ExitCode===0,'Worker did not shut down cleanly');await requireIdle(original);
@@ -95,8 +104,9 @@ async function backup(id:string,revision:string){
   matches(baseline,await snapshot(original));
   const files=['baseline.json','private/original-runtime.json','private/root-env','postgres.dump','mongo.archive.gz','redis.rdb'];const hashes:Record<string,string>={};for(const file of files)hashes[file]=await hashFile(join(destination,file));
   await privateWrite(join(destination,'manifest.json'),JSON.stringify({version:1,project:'rankme',sourceRevision:revision,createdAt:new Date().toISOString(),hashes,masterAndSessionKeysPreserved:true,providerCalled:false},null,2));
- }finally{emit('Resume original applications');await resume(intent);await waitHealthy(SERVICES.map(service=>original[service].id));}
- check(sameOriginals(original,await originals()),'Original runtime identity/configuration changed');emit('Consistent application backup completed',{originalServicesHealthy:true,providerCalled:false});return destination;
+  await verifyBackup(destination);captured=true;
+ }finally{if(!holdForCutover||!captured){emit('Resume original applications');await resume(intent);await waitHealthy(SERVICES.map(service=>original[service].id));}}
+ if(!holdForCutover)check(sameOriginals(original,await originals()),'Original runtime identity/configuration changed');emit('Consistent application backup completed',{originalServicesHealthy:!holdForCutover,providerCalled:false});return destination;
 }
 
 export function validateRestoreProject(id:string){check(/^coolify-[0-9]{8}-[a-f0-9]{8}$/.test(id),'Invalid isolated recovery id');return 'rankme-restore-'+id;}
@@ -150,11 +160,12 @@ async function restore(path:string,id:string){
 async function testGuard(id:string,image:string){
  check(imageId(image),'Exact fixture image required');const name='rankme-recovery-'+id;validateRestoreProject(id);const created:string[]=[];const fixtures={} as Intent['originals'];
  try{
-  for(const service of APPS){const fixture=await run(['docker','create','--name',name+'-fixture-'+service,'--label','com.docker.compose.project=rankme','--label','com.docker.compose.service='+service,'--network','none','--memory','64m','--cpus','0.1','--pids-limit','32','--health-cmd','true','--health-interval','1s','--entrypoint','sh',image,'-c','sleep 300'],'Create disposable guard fixture');check(containerId(fixture),'Invalid fixture identity');created.push(fixture);fixtures[service]={id:fixture,image};}
+  for(const service of APPS){const fixture=await run(['docker','create','--name',name+'-fixture-'+service,'--label','com.docker.compose.project='+PROJECT,'--label','com.docker.compose.service='+service,'--network','none','--memory','64m','--cpus','0.1','--pids-limit','32','--health-cmd','true','--health-interval','1s','--entrypoint','sh',image,'-c','sleep 300'],'Create disposable guard fixture');check(containerId(fixture),'Invalid fixture identity');created.push(fixture);fixtures[service]={id:fixture,image};}
   const jobId=await run(['docker','create','--name',name,'--network','none','--memory','64m','--cpus','0.1','--entrypoint','sh',image,'-c','sleep 300'],'Create disposable stopped-job test');check(containerId(jobId),'Invalid guard test job');created.push(jobId);
-  await privateWrite(join(CONTROL,'intent.json'),JSON.stringify({jobId,jobName:name,originals:fixtures}));await run(['docker','start',jobId],'Start disposable test job');
+  await privateWrite(join(CONTROL,'intent.json'),JSON.stringify({jobId,jobName:name,project:PROJECT,holdOnSuccess:true,originals:fixtures}));await run(['docker','start',jobId],'Start disposable test job');
   const volume=ROOT.split('/')[5];check(volume.startsWith('coolify-rankme-recovery-'),'Unexpected operations volume');const mount='/var/lib/docker/volumes/'+volume+'/_data';
-  const guardId=await run(['docker','run','-d','--name',name+'-guard-fixture','--network','none','--user','1000:1000','--group-add','0','--memory','128m','--cpus','0.25','--pids-limit','64','--cap-drop','ALL','--security-opt','no-new-privileges:true','--mount',`type=volume,source=${volume},target=${mount}`,'--mount','type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock','--workdir',ROOT,image,join(ROOT,'ops','coolify','recovery.ts'),'--mode=guard'],'Start independent test guard');check(containerId(guardId),'Invalid fixture guard');created.push(guardId);
+  const socketGroup=process.env.RECOVERY_SOCKET_GID;check(typeof socketGroup==='string'&&/^[0-9]{1,10}$/.test(socketGroup),'Resolve the selected Docker socket group');
+  const guardId=await run(['docker','run','-d','--name',name+'-guard-fixture','--network','none','--user','1000:1000','--group-add',socketGroup,'--env','RANKME_DOCKER_PROJECT='+PROJECT,'--memory','128m','--cpus','0.25','--pids-limit','64','--cap-drop','ALL','--security-opt','no-new-privileges:true','--mount',`type=volume,source=${volume},target=${mount}`,'--mount','type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock','--workdir',ROOT,image,join(ROOT,'ops','coolify','recovery.ts'),'--mode=guard'],'Start independent test guard');check(containerId(guardId),'Invalid fixture guard');created.push(guardId);
   const until=Date.now()+15000;for(;;){const logs=await run(['docker','logs',guardId],'Read controlled fixture guard signal');if(logs.includes('Recovery guard ready'))break;check(Date.now()<until,'Fixture guard never became ready');await Bun.sleep(250);}
   await run(['docker','kill','--signal','KILL',jobId],'Kill only disposable test job');await waitHealthy(APPS.map(service=>fixtures[service].id));await privateWrite(join(CONTROL,'guard-test.json'),JSON.stringify({at:new Date().toISOString(),sigkillRecoveryVerified:true,originalContainersChanged:false}));emit('Independent guard SIGKILL test passed',{disposableApplicationsStarted:3,originalApplicationsChanged:false});
  }finally{for(const container of created.reverse())await run(['docker','rm','-f',container],'Remove exact disposable fixture');}
@@ -163,6 +174,10 @@ async function testGuard(id:string,image:string){
 const arg=(name:string)=>process.argv.find(value=>value.startsWith('--'+name+'='))?.slice(name.length+3)??'';
 if(import.meta.main){
  const mode=arg('mode');
- const action=async()=>{check(process.platform==='linux'&&process.getuid?.()===1000&&ROOT.startsWith('/var/lib/docker/volumes/'),'Use the non-root Docker maintenance helper');await privateDir(CONTROL);if(mode==='preflight')await preflight();else if(mode==='guard')await guard();else if(mode==='backup'){const path=await backup(arg('id'),arg('revision'));await restore(path,arg('id'));}else if(mode==='restore')await restore(arg('backup'),arg('id'));else if(mode==='test-guard')await testGuard(arg('id'),arg('image'));else throw new SafeError('Invalid recovery mode');};
+ const action=async()=>{check(process.platform==='linux'&&process.getuid?.()===1000&&ROOT.startsWith('/var/lib/docker/volumes/'),'Use the non-root Docker maintenance helper');await privateDir(CONTROL);if(mode==='preflight')await preflight();else if(mode==='guard')await guard();else if(mode==='backup'){
+  const intent=validateIntent(JSON.parse(await readFile(join(CONTROL,'intent.json'),'utf8')));const hold=intent.holdOnSuccess===true;
+  try{const path=await backup(arg('id'),arg('revision'),hold);await restore(path,arg('id'));if(hold)await privateWrite(join(CONTROL,'held-for-cutover.json'),JSON.stringify({jobId:intent.jobId,project:PROJECT,completeRestoreVerified:true}));}
+  catch(error){if(hold){await resume(intent);await waitHealthy(APPS.map(service=>intent.originals[service].id));}throw error;}
+ }else if(mode==='restore')await restore(arg('backup'),arg('id'));else if(mode==='test-guard')await testGuard(arg('id'),arg('image'));else throw new SafeError('Invalid recovery mode');};
  action().catch(error=>{emit('Recovery operation failed',{error:error instanceof SafeError?error.message:'Unexpected failure; private output suppressed'});process.exitCode=1;});
 }

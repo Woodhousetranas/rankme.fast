@@ -86,6 +86,15 @@ email credentials. Publishing this manifest does not change that fact.
 
 ## Existing-stack consistent recovery
 
+Recovery must select either the original `rankme` project or one exact Coolify
+application UUID. Every read, pause, resume, image and volume operation must stay
+on that Docker daemon and that project's exact container IDs. A disposable
+SIGKILL test must prove that an independent guard resumes those IDs on failure.
+An explicit cutover hold may keep applications stopped only after the complete
+isolated restore succeeds; failure must resume the source. Recovery evidence and
+encrypted exports on Windows use the owner/SYSTEM-protected `USERPROFILE/.coolify`
+directory so native Docker and scheduled jobs see the same files.
+
 `recovery.ts` is an explicitly launched operator tool, not a server/worker module.
 It runs as UID1000 in a fresh Docker volume with the Docker socket only for
 maintenance. It imports no application/provider code. The original root `.env`
@@ -93,6 +102,13 @@ remains authoritative; the backup stores its cold copy plus actual per-service
 runtime configuration. No `_FILE` resolver or app secret-file mount is introduced.
 
 Build `ops/coolify/Dockerfile.operations` as `local/rankme-operations:20261018`.
+For Coolify, build it in the existing `coolify-local-host` Docker daemon, then
+pass `-ApplicationUuid <uuid>` to `recovery.ps1 -Mode Prepare`. Later modes read
+the daemon and project from the protected state; an explicitly mismatched UUID
+is rejected. The helper resolves the actual Docker socket group without changing
+its permissions. It copies Coolify's generated root `.env` into a protected
+Docker-only recovery input directory; API/worker keys must match that snapshot.
+Neither app secret loading nor the original project `.env` is changed.
 Use PowerShell7 and `recovery.ps1 -Mode Prepare -StateFile <private-metadata.json>`
 to freeze clean committed source. `-LiveSource` selects the existing original
 project; the mini-PC default is its established canonical directory. Then run
@@ -108,6 +124,11 @@ consistent Redis RDB with absolute expiry and pending/delayed job data. It compa
 the complete data before/after logical dumps, then resumes the same original
 application IDs/configuration and verifies health. Databases remain running.
 The guard resumes those exact original application IDs if the job dies.
+`-Mode Run -HoldForCutover` is an explicit maintenance option: keep source
+applications stopped only after backup integrity and the full isolated restore
+succeed. A missing completion marker, failed restore or killed job resumes the
+exact source applications. Stop the ready hold guard before an accepted cutover
+and preserve the source data for rollback; do not run two writers on copied data.
 
 The same job then restores into fresh project-labelled volumes on an internal
 network with no ports. Only PostgreSQL, MongoDB and Redis start; no API, worker or
@@ -134,12 +155,17 @@ state together with the backup; do not repeat maintenance just to rerun a verifi
 `export-recovery.ps1 -StateFile <original>` requires a completed successful
 original or retry verifier. Build the pinned `Dockerfile.backup-crypto` as
 `local/coolify-backup-crypto:age-1.3.2`. The exporter checks that the six original
-images contain no credential environment values, includes them and the frozen
+images contain no credential environment values, includes every distinct execution
+image for the six services and the frozen
 backup/verifier source, then streams directly to an age encrypted archive under
-`%LOCALAPPDATA%/Coolify/application-backups`. The entire decrypted stream must
+`USERPROFILE/.coolify/application-backups`. The entire decrypted stream must
 match its original hash before publication; no plaintext tar is written to Windows.
 Wrong-key, corruption and truncation checks run as well. The recovery identity
-stays separately at `%LOCALAPPDATA%/Coolify/recovery-keys/mini-pc.agekey`; both
+stays separately at `USERPROFILE/.coolify/recovery-keys/mini-pc.agekey`; both
 locations allow only the Windows owner and SYSTEM. Store a separate off-host
 copy of that identity. A same-PC archive/key is not off-host disaster recovery.
+For a UUID-selected backup, encryption runs in the application daemon with only
+the public age recipient. A native binary stream copies the ciphertext to
+Windows, where the separate parent helper decrypts and hashes the complete file.
+The private recovery identity is never mounted inside Coolify.
 The exporter does not upload data or select a paid storage/alert account.
