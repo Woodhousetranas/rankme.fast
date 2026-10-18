@@ -83,3 +83,38 @@ must match the chosen origins. Never put secrets in `VITE_*` variables.
 
 The currently installed mini-PC source stack is demo-only and has no live SEO or
 email credentials. Publishing this manifest does not change that fact.
+
+## Existing-stack consistent recovery
+
+`recovery.ts` is an explicitly launched operator tool, not a server/worker module.
+It runs as UID1000 in a fresh Docker volume with the Docker socket only for
+maintenance. It imports no application/provider code. The original root `.env`
+remains authoritative; the backup stores its cold copy plus actual per-service
+runtime configuration. No `_FILE` resolver or app secret-file mount is introduced.
+
+Build `ops/coolify/Dockerfile.operations` as `local/rankme-operations:20261018`.
+Use PowerShell7 and `recovery.ps1 -Mode Prepare -StateFile <private-metadata.json>`
+to freeze clean committed source. `-LiveSource` selects the existing original
+project; the mini-PC default is its established canonical directory. Then run
+`-Mode Preflight` and `-Mode TestGuard` with the same state file. Preflight checks
+all six healthy original identities and available exact images, matching private
+API/worker/SQL bindings, all24queues and read-only full data/schema proof. The
+guard test SIGKILLs only a disposable job and starts three stopped fixtures.
+
+`-Mode Run` requires both checks and an independent ready guard. It pauses API
+and web, rejects active work, drains the idle worker and captures PostgreSQL
+including non-public migration schemas, MongoDB documents/UUIDs/indexes, and a
+consistent Redis RDB with absolute expiry and pending/delayed job data. It compares
+the complete data before/after logical dumps, then resumes the same original
+application IDs/configuration and verifies health. Databases remain running.
+The guard resumes those exact original application IDs if the job dies.
+
+The same job then restores into fresh project-labelled volumes on an internal
+network with no ports. Only PostgreSQL, MongoDB and Redis start; no API, worker or
+provider executes. Full SQL rows/schema/indexes, MongoDB BSON/index metadata and
+byte-safe Redis contents must match. Expired TTL keys may elapse naturally; live
+keys must retain their original absolute expiry. Restored Redis first reads the
+RDB, builds AOF, and then passes a restart using AOF. All test stores stop and
+their recovered data remains until explicitly cleaned. `-Mode Status` reports
+only controlled phase logs. A passing local restore does not establish live
+SEO/email provider operation or production authentication acceptance.

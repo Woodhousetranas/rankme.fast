@@ -1,0 +1,8 @@
+FROM docker:29.9.1-cli@sha256:6fae2214c3121a28d5aa639d09032f61310b7c9c75ffbad1025f261a1b621800 AS cli
+FROM oven/bun:1.3.8@sha256:371d30538b69303ced927bb5915697ac7e2fa8cb409ee332c66009de64de5aa3
+USER root
+RUN usermod -l operations bun
+COPY --from=cli /usr/local/bin/docker /usr/local/bin/docker
+USER operations
+ENV USER=operations LOGNAME=operations
+ENTRYPOINT ["bun", "--no-env-file"]
