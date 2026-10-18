@@ -118,3 +118,15 @@ RDB, builds AOF, and then passes a restart using AOF. All test stores stop and
 their recovered data remains until explicitly cleaned. `-Mode Status` reports
 only controlled phase logs. A passing local restore does not establish live
 SEO/email provider operation or production authentication acceptance.
+
+PostgreSQL logical dumps omit physical attribute slots of previously dropped
+columns. The proof normalizes only those gaps, retaining relative column order;
+every other byte of the SQL proof remains compared, including large integers.
+The complete original raw proof stays in the protected backup.
+
+If a consistent backup exists but a verifier needs repair, prepare fresh committed
+code with a **different** state file. Run `-Mode RestoreExisting -StateFile <new>
+-BackupStateFile <original>`. The retry mounts no live source, pauses no original
+application and uses a fresh isolated project. The original state records the
+separate verifier's exact container, volume and source revision. Preserve that
+state together with the backup; do not repeat maintenance just to rerun a verifier.

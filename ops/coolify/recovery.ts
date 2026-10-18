@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {readFile,writeFile,mkdir,chmod,lstat,rename,open} from 'node:fs/promises';
 import {resolve,join,dirname} from 'node:path';
-import {canonical,REDIS_PROOF,POSTGRES_PROOF,mongoProof,redisMatches,type RedisProof} from './recovery-proof';
+import {canonical,REDIS_PROOF,POSTGRES_PROOF,mongoProof,redisMatches,postgresMatches,type RedisProof} from './recovery-proof';
 
 const ROOT=resolve(import.meta.dir,'../..');
 const CONTROL=join(ROOT,'data','coolify-recovery');
@@ -55,7 +55,7 @@ async function snapshot(original:Original){
  check(pg.split('\n').every(line=>{try{JSON.parse(line);return true;}catch{return false;}})&&mongo.split('\n').every(line=>{try{JSON.parse(line);return true;}catch{return false;}}),'Malformed database recovery proof');
  return {postgres:pg,mongo,redis};
 }
-function matches(before:Awaited<ReturnType<typeof snapshot>>,after:Awaited<ReturnType<typeof snapshot>>){check(before.postgres===after.postgres&&before.mongo===after.mongo&&redisMatches(before.redis,after.redis),'Restored database, document, index or queue data differs');}
+function matches(before:Awaited<ReturnType<typeof snapshot>>,after:Awaited<ReturnType<typeof snapshot>>){check(postgresMatches(before.postgres,after.postgres),'Restored PostgreSQL data/schema differs');check(before.mongo===after.mongo,'Restored MongoDB documents/indexes differ');check(redisMatches(before.redis,after.redis),'Restored Redis data/expiry/queues differ');}
 export function validateIntent(intent:Intent){
  check(containerId(intent?.jobId)&&/^rankme-recovery-coolify-[0-9]{8}-[a-f0-9]{8}$/.test(intent.jobName),'Invalid recovery job identity');
  check(Object.keys(intent.originals??{}).sort().join(',')==='api,web,worker'&&APPS.every(service=>containerId(intent.originals[service].id)&&imageId(intent.originals[service].image)),'Invalid original application identities');return intent;
@@ -143,7 +143,7 @@ async function restore(path:string,id:string){
   const until=Date.now()+60000;for(;;){const info=await run(['docker','exec',runtime.redis.id,'redis-cli','INFO','persistence'],'Check isolated AOF rewrite');if(info.includes('aof_rewrite_in_progress:0')&&info.includes('aof_last_bgrewrite_status:ok'))break;check(Date.now()<until,'Restored Redis AOF rewrite did not finish');await Bun.sleep(500);}
   emit('Verify database restart and delayed-job persistence');await run(['docker','stop','--time','30',...created],'Stop isolated stores for recovery restart');await run(['docker','rm',runtime.redis.id],'Replace only isolated Redis fixture');created.splice(created.indexOf(runtime.redis.id),1);
   await run(['docker','start',runtime.mongo.id,runtime.postgres.id],'Restart isolated MongoDB/PostgreSQL');runtime.redis=await createDatabase(project,'redis',original.redis,volumes.redis,true);created.push(runtime.redis.id);await waitHealthy(created);matches(baseline,await snapshot(runtime));
-  const receipt={version:1,project,completedAt:new Date().toISOString(),sourceRevision:manifest.sourceRevision,completeSqlDataAndSchemaMatch:true,mongoDocumentsAndIndexMetadataMatch:true,completeRedisLogicalDataMatch:true,absoluteRedisExpiryPreserved:true,redisAofRestartVerified:true,originalApplicationsStopped:false,apiStarted:false,workerStarted:false,providerCalled:false,masterAndSessionKeysRecovered:true,isolatedPorts:[],isolatedNetworkInternal:true};
+  const receipt={version:1,project,completedAt:new Date().toISOString(),sourceRevision:manifest.sourceRevision,restoreVerifierRevision:arg('revision'),completeSqlDataAndSchemaMatch:true,sqlColumnOrderPreserved:true,droppedPhysicalColumnGapsNormalized:true,mongoDocumentsAndIndexMetadataMatch:true,completeRedisLogicalDataMatch:true,absoluteRedisExpiryPreserved:true,redisAofRestartVerified:true,originalApplicationsStopped:false,apiStarted:false,workerStarted:false,providerCalled:false,masterAndSessionKeysRecovered:true,isolatedPorts:[],isolatedNetworkInternal:true};
   await privateWrite(join(dir,'verified.json'),JSON.stringify(receipt,null,2));await privateWrite(join(path,'recovery-verified.json'),JSON.stringify(receipt,null,2));emit('Complete isolated application restore verified',{providerCalled:false,apiStarted:false,workerStarted:false});return receipt;
  }finally{if(created.length){emit('Stop isolated test stores and retain recovered volumes');await run(['docker','stop','--time','30',...created],'Stop scoped restore containers');}}
 }

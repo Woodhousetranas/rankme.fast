@@ -10,6 +10,23 @@ export function remainingRedis(proof:RedisProof,at:number){
  return Object.fromEntries(Object.entries(proof.entries).filter(([,entry])=>entry.expires===-1||entry.expires>at));
 }
 export function redisMatches(before:RedisProof,after:RedisProof){return canonical(remainingRedis(before,after.at))===canonical(remainingRedis(after,after.at));}
+export function normalizePostgresColumnPositions(proof:string){
+ const end=proof.indexOf('\n');const header=end<0?proof:proof.slice(0,end);
+ const metadata=JSON.parse(header);const columns=metadata.columns;
+ if(!Array.isArray(columns))throw Error('Invalid PostgreSQL schema proof');
+ let index=0;const counts=new Map<string,{physical:number;logical:number}>();
+ const normalized=header.replace(/"ordinal_position":\s*([0-9]+)/g,(_text,number)=>{
+  const column=columns[index++];
+  if(!column||!Number.isSafeInteger(column.ordinal_position)||column.ordinal_position!==Number(number))throw Error('Invalid PostgreSQL column order');
+  const key=JSON.stringify([column.table_schema,column.table_name]);const previous=counts.get(key)??{physical:0,logical:0};
+  if(column.ordinal_position<=previous.physical)throw Error('Invalid PostgreSQL physical column layout');
+  const logical=previous.logical+1;counts.set(key,{physical:column.ordinal_position,logical});return '"ordinal_position": '+logical;
+ });
+ if(index!==columns.length)throw Error('Incomplete PostgreSQL column metadata');
+ // Keep every other byte, including large integer data and sequence values.
+ return normalized+(end<0?'':proof.slice(end));
+}
+export function postgresMatches(before:string,after:string){return normalizePostgresColumnPositions(before)===normalizePostgresColumnPositions(after);}
 
 // One atomic read. Hex-encode bulk bytes so binary values cannot be changed by
 // JSON/UTF-8 decoding. Sort unordered hashes/sets; preserve list/stream order.

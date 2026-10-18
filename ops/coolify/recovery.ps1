@@ -1,6 +1,6 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([ValidateSet('Prepare','Preflight','TestGuard','Run','Status')][string]$Mode='Prepare',[string]$StateFile,[string]$LiveSource)
+param([ValidateSet('Prepare','Preflight','TestGuard','Run','Status','RestoreExisting')][string]$Mode='Prepare',[string]$StateFile,[string]$LiveSource,[string]$BackupStateFile)
 $ErrorActionPreference='Stop'
 $source=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 if(-not $LiveSource){$LiveSource='C:\Users\OlleG\Documents\Codex\2026-10-17\hitta-ett-gitrepo-som-heter-rankmefast'}
@@ -52,6 +52,17 @@ if($Mode -eq 'Status'){
 if(((& git -C $source rev-parse HEAD).Trim() -ne $state.source_revision) -or @(& git -C $source status --porcelain).Count){throw 'Recovery source changed after its frozen snapshot.'}
 $script="$($state.mountpoint)/project/ops/coolify/recovery.ts"
 $common=@('--network','none','--user','1000:1000','--group-add','0','--cap-drop','ALL','--security-opt','no-new-privileges:true','--memory','2g','--cpus','1.5','--pids-limit','256','--mount',"type=volume,source=$($state.volume),target=$($state.mountpoint)",'--mount','type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock','--workdir',"$($state.mountpoint)/project",'--env',"RECOVERY_MAINTENANCE_IMAGE=$($state.image)")
+if($Mode -eq 'RestoreExisting'){
+ if($state.started -or -not $BackupStateFile){throw 'Use a fresh prepared verifier and an explicit original backup state file.'}
+ $backup=Get-Content -LiteralPath $BackupStateFile -Raw|ConvertFrom-Json -AsHashtable
+ if($backup.id -notmatch '^coolify-[0-9]{8}-[a-f0-9]{8}$' -or $backup.volume -ne ('coolify-rankme-recovery-'+$backup.id.Substring(8)) -or $backup.mountpoint -ne "/var/lib/docker/volumes/$($backup.volume)/_data" -or $backup.backup_path -ne "$($backup.mountpoint)/backups/$($backup.id)"){throw 'Invalid original backup identity.'}
+ $job=(Invoke-RecoveryDocker (@('run','-d','--name',$state.job_name,'--label',"gladly.recovery.id=$($state.id)",'--label','gladly.recovery.mode=restore-only')+$common+@('--mount',"type=volume,source=$($backup.volume),target=$($backup.mountpoint)",$state.image,$script,'--mode=restore',"--id=$($state.id)","--backup=$($backup.backup_path)","--revision=$($state.source_revision)"))|Out-String).Trim()
+ if($job -notmatch '^[a-f0-9]{64}$'){throw 'Invalid isolated verifier identity.'}
+ $state.started=$true;$state.container_id=$job;$state.mode='restore-only';Save-State $state
+ $backup.verified_restore_container_id=$job;$backup.verified_restore_volume=$state.volume;$backup.verified_restore_mountpoint=$state.mountpoint;$backup.verified_restore_revision=$state.source_revision
+ $backup|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $BackupStateFile -Encoding utf8
+ [pscustomobject]@{job=$state.job_name;container_id=$job;original_applications_stopped=$false;live_source_mounted=$false;backup_reused=$true}|ConvertTo-Json;exit
+}
 if($Mode -eq 'Preflight'){
  $null=Invoke-RecoveryDocker (@('run','--rm')+$common+@('--mount',"type=bind,source=$($state.live_source),target=/live-source,readonly",$state.image,$script,'--mode=preflight'))
  $state.preflight=$true;Save-State $state;[pscustomobject]@{preflight=$true;original_services_stopped=$false}|ConvertTo-Json;exit
