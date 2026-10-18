@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+
 # ---------- build stage ----------
-FROM node:20-bookworm-slim AS build
+FROM ${NODE_IMAGE} AS build
 WORKDIR /app
 
 # Vite build-time env — sourced from compose build args, never literal.
@@ -18,7 +20,7 @@ ENV VITE_API_BASE_URL=${VITE_API_BASE_URL} \
     VITE_GITHUB_URL=${VITE_GITHUB_URL} \
     VITE_RELEASE_STAGE=${VITE_RELEASE_STAGE}
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY vendor ./vendor
 RUN --mount=type=cache,target=/root/.npm npm ci
 
@@ -33,16 +35,18 @@ RUN npm run build:client && npm run build:server
 
 
 # ---------- prod-deps stage ----------
-FROM node:20-bookworm-slim AS prod-deps
+FROM ${NODE_IMAGE} AS prod-deps
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json .npmrc ./
 COPY vendor ./vendor
 RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
 
 
 # ---------- runtime stage ----------
-FROM node:20-bookworm-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
+ARG APP_SOURCE_REVISION=dev
+LABEL org.opencontainers.image.revision=${APP_SOURCE_REVISION}
 WORKDIR /app
 ENV NODE_ENV=production
 

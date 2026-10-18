@@ -1,0 +1,93 @@
+# Render with ops/coolify/render.ps1; deploy the standalone rendered file.
+# Route /api to api on the same origin, preserving the prefix. Route / to web.
+name: rankme-coolify
+networks:
+  rankme: !override
+    external: true
+    name: ${COOLIFY_RESOURCE_UUID:?The Coolify application identity is required}
+  core:
+    driver: bridge
+services:
+  mongo:
+    networks: !override [core]
+    cpus: 0.5
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+  postgres:
+    networks: !override [core]
+    cpus: 0.5
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_PASSWORD:
+  redis:
+    networks: !override [core]
+    cpus: 0.25
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+  api:
+    networks: !override [rankme, core]
+    ports: !reset []
+    expose: ["8080"]
+    cpus: 1
+    pids_limit: 256
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    build:
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
+        APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
+    environment:
+      NODE_ENV: production
+      ALLOW_FAKE_PROVIDERS: ${ALLOW_FAKE_PROVIDERS:-false}
+      BETTER_AUTH_SECRET:
+      MASTER_ENCRYPTION_KEY:
+      DATABASE_URL:
+      CLIENT_URL:
+      SERVER_URL:
+      CONTACT_FORM_RECIPIENT:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COOLIFY_RESOURCE_UUID}
+      - 'traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.rule=Host(`${RANKME_HOST:-rankme.localhost}`) && PathPrefix(`/api`)'
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.entrypoints=http
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.priority=100
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.service=${COOLIFY_RESOURCE_UUID}-api
+      - traefik.http.services.${COOLIFY_RESOURCE_UUID}-api.loadbalancer.server.port=8080
+  worker:
+    networks: !override [core]
+    cpus: 1
+    pids_limit: 256
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    build:
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
+        APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
+    environment:
+      NODE_ENV: production
+      BETTER_AUTH_SECRET:
+      MASTER_ENCRYPTION_KEY:
+      DATABASE_URL:
+      CLIENT_URL:
+      SERVER_URL:
+      CONTACT_FORM_RECIPIENT:
+  web:
+    ports: !reset []
+    cpus: 0.5
+    pids_limit: 128
+    stop_grace_period: 30s
+    security_opt: [no-new-privileges:true]
+    build:
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
+        APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
+    expose: ["3000"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COOLIFY_RESOURCE_UUID}
+      - 'traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.rule=Host(`${RANKME_HOST:-rankme.localhost}`)'
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.entrypoints=http
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.priority=10
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.service=${COOLIFY_RESOURCE_UUID}-web
+      - traefik.http.services.${COOLIFY_RESOURCE_UUID}-web.loadbalancer.server.port=3000

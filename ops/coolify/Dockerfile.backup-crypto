@@ -1,0 +1,10 @@
+FROM docker:29.9.1-cli@sha256:6fae2214c3121a28d5aa639d09032f61310b7c9c75ffbad1025f261a1b621800
+# Official age v1.3.2 release asset; SHA-256 from the GitHub release API.
+# Installation and temporary downloads stay inside Docker.
+RUN wget -q -O /tmp/age.tar.gz https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz \
+ && echo 'cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10  /tmp/age.tar.gz' | sha256sum -c - \
+ && tar xzf /tmp/age.tar.gz -C /tmp \
+ && cp /tmp/age/age /tmp/age/age-keygen /usr/local/bin/ \
+ && rm -rf /tmp/age /tmp/age.tar.gz
+USER 1000:1000
+ENTRYPOINT ["sh"]
