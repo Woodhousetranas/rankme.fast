@@ -130,3 +130,16 @@ code with a **different** state file. Run `-Mode RestoreExisting -StateFile <new
 application and uses a fresh isolated project. The original state records the
 separate verifier's exact container, volume and source revision. Preserve that
 state together with the backup; do not repeat maintenance just to rerun a verifier.
+
+`export-recovery.ps1 -StateFile <original>` requires a completed successful
+original or retry verifier. Build the pinned `Dockerfile.backup-crypto` as
+`local/coolify-backup-crypto:age-1.3.2`. The exporter checks that the six original
+images contain no credential environment values, includes them and the frozen
+backup/verifier source, then streams directly to an age encrypted archive under
+`%LOCALAPPDATA%/Coolify/application-backups`. The entire decrypted stream must
+match its original hash before publication; no plaintext tar is written to Windows.
+Wrong-key, corruption and truncation checks run as well. The recovery identity
+stays separately at `%LOCALAPPDATA%/Coolify/recovery-keys/mini-pc.agekey`; both
+locations allow only the Windows owner and SYSTEM. Store a separate off-host
+copy of that identity. A same-PC archive/key is not off-host disaster recovery.
+The exporter does not upload data or select a paid storage/alert account.
