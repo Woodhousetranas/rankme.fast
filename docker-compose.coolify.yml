@@ -1,6 +1,10 @@
 # Render with ops/coolify/render.ps1; deploy the standalone rendered file.
 # Route /api to api on the same origin, preserving the prefix. Route / to web.
 name: rankme-coolify
+networks:
+  rankme: !override
+    external: true
+    name: ${COOLIFY_RESOURCE_UUID:?The Coolify application identity is required}
 services:
   mongo:
     cpus: 0.5
@@ -11,7 +15,7 @@ services:
     pids_limit: 256
     security_opt: [no-new-privileges:true]
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?A database password is required}
+      POSTGRES_PASSWORD:
   redis:
     cpus: 0.25
     pids_limit: 128
@@ -30,12 +34,20 @@ services:
     environment:
       NODE_ENV: production
       ALLOW_FAKE_PROVIDERS: ${ALLOW_FAKE_PROVIDERS:-false}
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?A session secret is required}
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Preserve the encryption key during migration}
-      DATABASE_URL: ${DATABASE_URL:?A database connection is required}
-      CLIENT_URL: ${CLIENT_URL:?The public origin is required}
-      SERVER_URL: ${SERVER_URL:?The API public origin is required}
-      CONTACT_FORM_RECIPIENT: ${CONTACT_FORM_RECIPIENT:?A valid contact recipient is required}
+      BETTER_AUTH_SECRET:
+      MASTER_ENCRYPTION_KEY:
+      DATABASE_URL:
+      CLIENT_URL:
+      SERVER_URL:
+      CONTACT_FORM_RECIPIENT:
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COOLIFY_RESOURCE_UUID}
+      - 'traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.rule=Host(`${RANKME_HOST:-rankme.localhost}`) && PathPrefix(`/api`)'
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.entrypoints=http
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.priority=100
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-api.service=${COOLIFY_RESOURCE_UUID}-api
+      - traefik.http.services.${COOLIFY_RESOURCE_UUID}-api.loadbalancer.server.port=8080
   worker:
     cpus: 1
     pids_limit: 256
@@ -47,12 +59,12 @@ services:
         APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
     environment:
       NODE_ENV: production
-      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?A session secret is required}
-      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Preserve the encryption key during migration}
-      DATABASE_URL: ${DATABASE_URL:?A database connection is required}
-      CLIENT_URL: ${CLIENT_URL:?The public origin is required}
-      SERVER_URL: ${SERVER_URL:?The API public origin is required}
-      CONTACT_FORM_RECIPIENT: ${CONTACT_FORM_RECIPIENT:?A valid contact recipient is required}
+      BETTER_AUTH_SECRET:
+      MASTER_ENCRYPTION_KEY:
+      DATABASE_URL:
+      CLIENT_URL:
+      SERVER_URL:
+      CONTACT_FORM_RECIPIENT:
   web:
     ports: !reset []
     cpus: 0.5
@@ -64,3 +76,11 @@ services:
         APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
         APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
     expose: ["3000"]
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COOLIFY_RESOURCE_UUID}
+      - 'traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.rule=Host(`${RANKME_HOST:-rankme.localhost}`)'
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.entrypoints=http
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.priority=10
+      - traefik.http.routers.${COOLIFY_RESOURCE_UUID}-web.service=${COOLIFY_RESOURCE_UUID}-web
+      - traefik.http.services.${COOLIFY_RESOURCE_UUID}-web.loadbalancer.server.port=3000

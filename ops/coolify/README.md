@@ -12,7 +12,11 @@ pwsh -NoProfile -File ops/coolify/render.ps1 -Check
 
 In Coolify, use a Git-based Docker Compose application with base directory `/`
 and Compose location `/docker-compose.coolify.rendered.yml`. Select the reviewed
-commit and set `APP_SOURCE_REVISION` to its full 40-character SHA and
+commit and enable **Raw (deploy file as-is)** plus **Preserve repository during
+deployment**. Normal Coolify 4.4.6 injects the full runtime env file into every
+service; raw mode keeps API/database secrets out of the public web container.
+Preservation keeps the read-only `./docs` bind tied to the deployed source.
+Set `APP_SOURCE_REVISION` to the full 40-character SHA and
 `APP_BUILD_SHA` to its first 12 characters (the application's supported version
 format). The full SHA is recorded in the image revision label. Do not deploy another task's
 uncommitted working copy. The Dockerfiles include the committed `.npmrc` in both
@@ -31,17 +35,18 @@ It removes host-published ports and generated global volume/network names so
 Coolify can give staging and production distinct identities. Keep
 `connect_to_docker_network` false unless a separately reviewed integration needs it.
 
-## HTTP routing and authentication
+## Private HTTP routing and authentication
 
-Use the same public origin for client, API and authentication. Configure the
-Coolify Compose service domains as follows, replacing the example hostname:
+Use the same origin for client, API and authentication. Set `RANKME_HOST` to the
+private hostname, default `rankme.localhost`. The source-owned Traefik labels
+route `/api` to API8080 with priority100 and `/` to web3000 with priority10.
+There is no prefix-stripping middleware. The external network name is the unique
+`COOLIFY_RESOURCE_UUID` network that Coolify creates and connects to its proxy.
+No domain-based proxy configuration is delegated to Coolify in raw mode.
 
-- `web`: `https://rankme.example.com:3000`
-- `api`: `https://rankme.example.com:8080/api`
-
-Set the application setting `is_stripprefix_enabled=false`. `/api` must reach
-Express unchanged. Coolify's more specific API router should win over the root
-web router. Verify this through the actual proxy after deployment.
+These labels provide private HTTP verification. Before public production, add and
+verify the corresponding HTTPS/TLS routers for the chosen real domain; do not
+publish the HTTP-only verifier as a production service.
 
 This preserves the API's single trusted proxy hop and client IP rate limiting.
 Routing all API traffic through the web proxy behind another proxy would replace
@@ -52,6 +57,9 @@ paths newly added by upstream; do not maintain a proxy-side SPA route allow-list
 Use the root `.env.example` as the variable inventory. Actual values belong only
 in Coolify's resource environment / its protected generated root `.env`. Keep
 the existing session and master encryption keys when migrating existing data.
+Required private values pass through only explicitly selected runtime environment
+keys; they are not required while parsing Compose for an image build. The
+deployment preflight and application startup must reject missing values.
 `CLIENT_URL`, `SERVER_URL`, optional `APP_URL`, and the Vite build-time origins
 must match the chosen origins. Never put secrets in `VITE_*` variables.
 
