@@ -1,6 +1,6 @@
 #requires -Version 7.0
 [CmdletBinding()]
-param([string]$DataRoot=(Join-Path $env:USERPROFILE '.coolify'),[string]$StateFile=(Join-Path $DataRoot 'production-evidence\rankme-recovery-state.json'))
+param([string]$DataRoot=(Join-Path $env:USERPROFILE '.coolify'),[string]$StateFile=(Join-Path $DataRoot 'production-evidence\rankme-recovery-state.json'),[switch]$ResumeExport)
 $ErrorActionPreference='Stop'
 if(-not $IsWindows){throw 'Run the exporter with PowerShell7 on the mini-PC.'}
 . (Join-Path $PSScriptRoot 'private-files.ps1')
@@ -45,7 +45,12 @@ if($state.application_uuid){
 }
 $root=[IO.Path]::GetFullPath($DataRoot);$keys=Join-Path $root 'recovery-keys';$archives=Join-Path $root 'application-backups';$destination=Join-Path $archives ('rankme-'+$state.id)
 New-RecoveryDirectory $keys;New-RecoveryDirectory $archives
-if(Test-Path -LiteralPath $destination){throw 'An encrypted export destination already exists; no backup will be overwritten.'}
+if(Test-Path -LiteralPath $destination){
+ if(-not $ResumeExport -or -not $state.application_uuid){throw 'An encrypted export destination already exists; no backup will be overwritten.'}
+ $residual=@(Get-ChildItem -LiteralPath $destination -Force)
+ if(@($residual|Where-Object{$_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $_.Name -notin @('plaintext.sha256','rankme.tar.age.partial')}).Count){throw 'Refuse to resume a completed or unrecognized export directory.'}
+}
+if($ResumeExport -and (Invoke-ApplicationDocker @('ps','--filter',"volume=$($state.volume)",'--format','{{.ID}}')|Out-String).Trim()){throw 'A prior application recovery/export helper is still running; wait for it before resuming.'}
 $common=@('run','--rm','--network','none','--user','1000:1000','--cap-drop','ALL','--security-opt','no-new-privileges:true','--memory','256m','--cpus','0.5','--pids-limit','64')
 $keyScript=@'
 set -eu
@@ -75,7 +80,12 @@ umask 077
 directory="/source/backups/$1"
 shift
 test -s "$directory/recovery-verified.json"
-test ! -e "$directory/execution-images.tar"
+if test -e "$directory/execution-images.tar"; then
+  test -s "$directory/export-attachments.sha256"
+  cd "$directory"
+  sha256sum -c export-attachments.sha256 >/dev/null
+  exit 0
+fi
 docker image save --output "$directory/execution-images.tar.partial" "$@"
 mv "$directory/execution-images.tar.partial" "$directory/execution-images.tar"
 tar czf "$directory/recovery-source.tgz" --exclude=./.env --exclude=./data --exclude=./node_modules --exclude=./dist -C /source/project .
@@ -104,9 +114,18 @@ $partial=Join-Path $destination 'rankme.tar.age.partial'
 try{
  if($state.application_uuid){
   $encryptedRoot="/data/gladly/recovery-exports/rankme-$($state.id)"
-  $null=& docker exec coolify-local-host sh -c 'set -eu; test ! -e "$1"; umask 077; mkdir -p "$1"; chown 1000:1000 "$1"; chmod 700 "$1"' rankme-encrypted-export $encryptedRoot
-  if($LASTEXITCODE -ne 0){throw 'Fresh protected encrypted transfer directory is required.'}
-  $null=Invoke-PrivateDocker ($common+@('--mount',"type=volume,source=$($state.volume),target=/source,readonly",'--mount',"type=bind,source=$encryptedRoot,target=/output",$image,'-c',$export,'encrypt-application-backup',$state.id,$recipient)) 'encrypt inside application Docker without the private identity' -InApplicationEngine
+  $null=& docker exec coolify-local-host test -e $encryptedRoot
+  $existingTransfer=$LASTEXITCODE -eq 0
+  if($existingTransfer){
+   if(-not $ResumeExport){throw 'An encrypted transfer already exists; use explicit resume.'}
+   $null=& docker exec coolify-local-host sh -c 'set -eu; test -d "$1"; test ! -L "$1"; test -s "$1/rankme.tar.age.partial"; test ! -L "$1/rankme.tar.age.partial"; test -s "$1/plaintext.sha256"; test ! -L "$1/plaintext.sha256"; test "$(find "$1" -mindepth 1 -maxdepth 1 | wc -l)" -eq 2' rankme-existing-ciphertext $encryptedRoot
+   if($LASTEXITCODE -ne 0){throw 'Unrecognized or incomplete encrypted transfer inputs.'}
+  }else{
+   $null=& docker exec coolify-local-host sh -c 'set -eu; test ! -e "$1"; umask 077; mkdir -p "$1"; chown 1000:1000 "$1"; chmod 700 "$1"' rankme-encrypted-export $encryptedRoot
+   if($LASTEXITCODE -ne 0){throw 'Fresh protected encrypted transfer directory is required.'}
+   $null=Invoke-PrivateDocker ($common+@('--mount',"type=volume,source=$($state.volume),target=/source,readonly",'--mount',"type=bind,source=$encryptedRoot,target=/output",$image,'-c',$export,'encrypt-application-backup',$state.id,$recipient)) 'encrypt inside application Docker without the private identity' -InApplicationEngine
+  }
+  if(Test-Path -LiteralPath $partial){if(-not $ResumeExport){throw 'A prior partial Windows transfer exists.'};Remove-Item -LiteralPath $partial}
   # Only ciphertext leaves the nested daemon. Native streams preserve binary bytes.
   $info=[Diagnostics.ProcessStartInfo]::new('docker.exe');$info.UseShellExecute=$false;$info.CreateNoWindow=$true;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
   foreach($argument in @('exec','coolify-local-host','cat',"$encryptedRoot/rankme.tar.age.partial")){$info.ArgumentList.Add($argument)}

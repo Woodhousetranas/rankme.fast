@@ -168,4 +168,11 @@ For a UUID-selected backup, encryption runs in the application daemon with only
 the public age recipient. A native binary stream copies the ciphertext to
 Windows, where the separate parent helper decrypts and hashes the complete file.
 The private recovery identity is never mounted inside Coolify.
+If an external runner times out after encryption, wait for its Docker helper to
+finish, then use `export-recovery.ps1 -ResumeExport -StateFile <same-state>`.
+Resume checks the existing image/source attachment hashes and accepts only the
+two recognized ciphertext transfer files. It repeats full Windows authentication
+and plaintext hashing before publication. Completed or unrecognized output
+directories are refused. Allow enough execution time for the full image bundle;
+the feedback collector's default two minutes is too short for large exports.
 The exporter does not upload data or select a paid storage/alert account.
