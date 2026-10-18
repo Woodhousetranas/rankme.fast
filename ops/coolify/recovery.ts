@@ -70,10 +70,11 @@ async function guard(){
  await resume(intent);await waitHealthy(APPS.map(service=>intent.originals[service].id));await privateWrite(join(CONTROL,'guard-resumed.json'),JSON.stringify({at:new Date().toISOString(),originalApplicationsHealthy:true}));emit('Exact original applications resumed by independent guard');for(;;)await Bun.sleep(60000);
 }
 async function preflight(){
- const original=await originals();await requireIdle(original);await snapshot(original);
+ const original=await originals();await sourceEnvironment(original);await requireIdle(original);await snapshot(original);
  await privateWrite(join(CONTROL,'original.json'),JSON.stringify(original));emit('Original-stack preflight passed',{services:6,queues:24,activeJobs:0,privateValuesPrinted:false});return original;
 }
 function rootEnvironmentValue(source:string,key:string){const line=source.split(/\r?\n/).find(line=>line.startsWith(key+'='));if(!line)return '';let value=line.slice(key.length+1).trim();if((value.startsWith('"')&&value.endsWith('"'))||(value.startsWith("'")&&value.endsWith("'")))value=value.slice(1,-1);return value;}
+async function sourceEnvironment(original:Original){const info=await lstat('/live-source/.env');check(info.isFile()&&!info.isSymbolicLink()&&info.size<1024*1024,'Original root environment must be a regular file');const value=await readFile('/live-source/.env');for(const key of ['MASTER_ENCRYPTION_KEY','BETTER_AUTH_SECRET'])check(rootEnvironmentValue(value.toString('utf8'),key)===original.api.env[key],'Original root environment and running encryption/session keys differ');return value;}
 function backupPath(id:string){check(/^coolify-[0-9]{8}-[a-f0-9]{8}$/.test(id),'Invalid operation id');const path=resolve(ROOT,'..','backups',id);check(path.startsWith('/var/lib/docker/volumes/coolify-rankme-recovery-'),'Use the dedicated Docker operations volume');return path;}
 async function backup(id:string,revision:string){
  const destination=backupPath(id);check(/^[a-f0-9]{40}$/.test(revision),'Committed source revision required');
@@ -85,7 +86,7 @@ async function backup(id:string,revision:string){
   emit('Pause idle original worker');await run(['docker','stop','--time','60',original.worker.id],'Drain worker');const stopped=await inspect(original.worker.id);check(stopped.State.ExitCode===0,'Worker did not shut down cleanly');await requireIdle(original);
   emit('Capture complete database, document and queued-work baseline');baseline=await snapshot(original);
   await privateWrite(join(destination,'baseline.json'),JSON.stringify(baseline));await privateWrite(join(destination,'private','original-runtime.json'),JSON.stringify(original));
-  const envInfo=await lstat('/live-source/.env');check(envInfo.isFile()&&!envInfo.isSymbolicLink()&&envInfo.size<1024*1024,'Original root environment must be a regular file');const rootEnv=await readFile('/live-source/.env');for(const key of ['MASTER_ENCRYPTION_KEY','BETTER_AUTH_SECRET'])check(rootEnvironmentValue(rootEnv.toString('utf8'),key)===original.api.env[key],'Original root environment and running encryption/session keys differ');await privateWrite(join(destination,'private','root-env'),rootEnv);
+  await privateWrite(join(destination,'private','root-env'),await sourceEnvironment(original));
   emit('Create PostgreSQL logical backup');await run(['docker','exec',original.postgres.id,'sh','-c','exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom --no-owner --no-acl'],'Dump original PostgreSQL',{output:join(destination,'postgres.dump')});
   emit('Create MongoDB document and index archive');await run(['docker','exec',original.mongo.id,'mongodump','--archive','--gzip','--db',new URL(original.api.env.MONGODB_URI).pathname.slice(1)],'Dump original MongoDB',{output:join(destination,'mongo.archive.gz')});
   emit('Create consistent Redis RDB including delayed jobs');const temp='/tmp/rankme-'+id+'.rdb';
