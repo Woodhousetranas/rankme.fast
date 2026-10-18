@@ -1,0 +1,66 @@
+# Render with ops/coolify/render.ps1; deploy the standalone rendered file.
+# Route /api to api on the same origin, preserving the prefix. Route / to web.
+name: rankme-coolify
+services:
+  mongo:
+    cpus: 0.5
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+  postgres:
+    cpus: 0.5
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?A database password is required}
+  redis:
+    cpus: 0.25
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+  api:
+    ports: !reset []
+    expose: ["8080"]
+    cpus: 1
+    pids_limit: 256
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    build:
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
+        APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
+    environment:
+      NODE_ENV: production
+      ALLOW_FAKE_PROVIDERS: ${ALLOW_FAKE_PROVIDERS:-false}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?A session secret is required}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Preserve the encryption key during migration}
+      DATABASE_URL: ${DATABASE_URL:?A database connection is required}
+      CLIENT_URL: ${CLIENT_URL:?The public origin is required}
+      SERVER_URL: ${SERVER_URL:?The API public origin is required}
+      CONTACT_FORM_RECIPIENT: ${CONTACT_FORM_RECIPIENT:?A valid contact recipient is required}
+  worker:
+    cpus: 1
+    pids_limit: 256
+    stop_grace_period: 120s
+    security_opt: [no-new-privileges:true]
+    build:
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
+        APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
+    environment:
+      NODE_ENV: production
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?A session secret is required}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:?Preserve the encryption key during migration}
+      DATABASE_URL: ${DATABASE_URL:?A database connection is required}
+      CLIENT_URL: ${CLIENT_URL:?The public origin is required}
+      SERVER_URL: ${SERVER_URL:?The API public origin is required}
+      CONTACT_FORM_RECIPIENT: ${CONTACT_FORM_RECIPIENT:?A valid contact recipient is required}
+  web:
+    ports: !reset []
+    cpus: 0.5
+    pids_limit: 128
+    stop_grace_period: 30s
+    security_opt: [no-new-privileges:true]
+    build:
+      args:
+        APP_BUILD_SHA: ${APP_BUILD_SHA:?An exact reviewed commit is required}
+        APP_SOURCE_REVISION: ${APP_SOURCE_REVISION:?The full reviewed commit is required}
+    expose: ["3000"]
