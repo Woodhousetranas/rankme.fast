@@ -20,6 +20,8 @@ foreach ($project in @('coolify-rankme-acceptance-a','coolify-rankme-acceptance-
     $names = @($config.volumes.Values.name) + @($config.networks.Values.name)
     if (@($names | Where-Object {$_ -and $_ -ne $project -and $_ -notlike "${project}_*"}).Count) { throw 'Resources have a global identity.' }
     if (-not $config.networks.rankme.external -or $config.networks.rankme.name -ne $project) { throw 'Proxy network does not match the unique Coolify resource.' }
+    if (@($config.services.web.networks.Keys).Count -ne 1 -or -not $config.services.web.networks.ContainsKey('rankme')) { throw 'The public web service has a backend network.' }
+    foreach ($name in @('mongo','postgres','redis','worker')) { if (@($config.services[$name].networks.Keys).Count -ne 1 -or -not $config.services[$name].networks.ContainsKey('core')) { throw 'A database or worker is attached to the proxy network.' } }
     foreach ($key in @('MASTER_ENCRYPTION_KEY','BETTER_AUTH_SECRET','POSTGRES_PASSWORD','DATABASE_URL','RESEND_API_KEY')) { if ($config.services.web.environment.ContainsKey($key)) { throw 'The public web service receives an API or database secret.' } }
     $identities += ,$names
 }

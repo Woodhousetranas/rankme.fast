@@ -43,6 +43,9 @@ route `/api` to API8080 with priority100 and `/` to web3000 with priority10.
 There is no prefix-stripping middleware. The external network name is the unique
 `COOLIFY_RESOURCE_UUID` network that Coolify creates and connects to its proxy.
 No domain-based proxy configuration is delegated to Coolify in raw mode.
+Only web and API join that proxy network. MongoDB, PostgreSQL, Redis and worker
+use the separate core network; API joins both. Core permits provider egress for
+API/worker, while the public web service cannot directly resolve/access databases.
 
 These labels provide private HTTP verification. Before public production, add and
 verify the corresponding HTTPS/TLS routers for the chosen real domain; do not
